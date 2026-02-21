@@ -69,24 +69,33 @@ fn load_config() -> Config {
 
 struct LispPrompt {
     port: String,
+    pub ps1: Option<String>,
+    pub ps2: Option<String>,
 }
 
 impl LispPrompt {
-    fn new(port: &str) -> Self {
+    fn new_with_prompts(port: &str, ps1: Option<String>, ps2: Option<String>) -> Self {
         Self {
             port: port.to_string(),
+            ps1,
+            ps2,
         }
     }
 
     fn disconnected() -> Self {
         Self {
             port: String::new(),
+            ps1: None,
+            ps2: None,
         }
     }
 }
 
 impl Prompt for LispPrompt {
     fn render_prompt_left(&self) -> std::borrow::Cow<'_, str> {
+        if let Some(ps1) = &self.ps1 {
+            return std::borrow::Cow::Borrowed(ps1.as_str());
+        }
         if self.port.is_empty() {
             std::borrow::Cow::Borrowed("(disconnected) » ")
         } else {
@@ -104,6 +113,9 @@ impl Prompt for LispPrompt {
     }
 
     fn render_prompt_multiline_indicator(&self) -> std::borrow::Cow<'_, str> {
+        if let Some(ps2) = &self.ps2 {
+            return std::borrow::Cow::Borrowed(ps2.as_str());
+        }
         std::borrow::Cow::Borrowed("  .. ")
     }
 
@@ -148,16 +160,83 @@ fn fetch_symbols(conn: &mut SerialConnection) -> Option<Vec<String>> {
     }
 }
 
-fn build_editor(port_name: &str, symbols: Option<Vec<String>>) -> (Reedline, LispPrompt) {
+/// Query a single prompt variable (*PS1* or *PS2*) from the MCU.
+/// Returns (value, is_fn): the resolved string and whether the var is a function.
+/// Returns None if the symbol is not defined or evaluation fails.
+fn fetch_prompt_var(conn: &mut SerialConnection, var: &str) -> Option<(String, bool)> {
+    // First check if it's a function
+    let is_fn = {
+        let expr = format!("(fn? {var})");
+        conn.send_line(&expr).ok()?;
+        let lines = conn.read_response();
+        lines.first().map(|l| l.trim() == "true").unwrap_or(false)
+    };
+    // Now evaluate: call it if function, stringify if value
+    let expr = if is_fn {
+        format!("({var})")
+    } else {
+        format!("(str {var})")
+    };
+    conn.send_line(&expr).ok()?;
+    let lines = conn.read_response();
+    let line = lines.first()?;
+    if line.starts_with("Error") || line.starts_with("ERROR") {
+        return None;
+    }
+    let s = line.trim().trim_matches('"').to_string();
+    if s.is_empty() {
+        None
+    } else {
+        Some((s, is_fn))
+    }
+}
+
+/// Re-evaluate a prompt function variable (*PS1* or *PS2*) on the MCU.
+/// Only called when we know the var is a function.
+fn eval_prompt_fn(conn: &mut SerialConnection, var: &str) -> Option<String> {
+    let expr = format!("({var})");
+    conn.send_line(&expr).ok()?;
+    let lines = conn.read_response();
+    let line = lines.first()?;
+    if line.starts_with("Error") || line.starts_with("ERROR") {
+        return None;
+    }
+    let s = line.trim().trim_matches('"').to_string();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
+/// Fetch *PS1* and *PS2* prompt overrides from the MCU.
+/// Returns ((ps1_value, ps1_is_fn), (ps2_value, ps2_is_fn)).
+fn fetch_prompt_vars(
+    conn: &mut SerialConnection,
+) -> (Option<(String, bool)>, Option<(String, bool)>) {
+    let ps1 = fetch_prompt_var(conn, "*PS1*");
+    let ps2 = fetch_prompt_var(conn, "*PS2*");
+    (ps1, ps2)
+}
+
+fn build_editor(
+    port_name: &str,
+    symbols: Option<Vec<String>>,
+    ps1: Option<String>,
+    ps2: Option<String>,
+) -> (Reedline, LispPrompt) {
     let history = Box::new(
         FileBackedHistory::with_file(1000, history_path()).expect("Failed to open history file"),
     );
 
-    let completer = Box::new(match symbols {
-        Some(syms) => LispCompleter::with_symbols(syms),
+    let completer = Box::new(match &symbols {
+        Some(syms) => LispCompleter::with_symbols(syms.clone()),
         None => LispCompleter::new(),
     });
-    let highlighter = Box::new(LispHighlighter::new());
+    let highlighter = Box::new(match symbols {
+        Some(syms) => LispHighlighter::with_symbols(syms),
+        None => LispHighlighter::new(),
+    });
     let validator = Box::new(LispValidator::new());
 
     let mut keybindings = default_emacs_keybindings();
@@ -189,7 +268,7 @@ fn build_editor(port_name: &str, symbols: Option<Vec<String>>) -> (Reedline, Lis
     let prompt = if port_name.is_empty() {
         LispPrompt::disconnected()
     } else {
-        LispPrompt::new(port_name)
+        LispPrompt::new_with_prompts(port_name, ps1, ps2)
     };
 
     (editor, prompt)
@@ -274,9 +353,32 @@ fn main() {
     println!("Type /help for available commands. Ctrl+D or /quit to exit.\n");
 
     let initial_symbols = connection.as_mut().and_then(fetch_symbols);
-    let (mut editor, mut prompt) = build_editor(&current_port, initial_symbols);
+    let (raw_ps1, raw_ps2) = connection
+        .as_mut()
+        .map(fetch_prompt_vars)
+        .unwrap_or((None, None));
+    let mut ps1_is_fn = raw_ps1.as_ref().map(|(_, f)| *f).unwrap_or(false);
+    let mut ps2_is_fn = raw_ps2.as_ref().map(|(_, f)| *f).unwrap_or(false);
+    let (mut editor, mut prompt) = build_editor(
+        &current_port,
+        initial_symbols,
+        raw_ps1.map(|(v, _)| v),
+        raw_ps2.map(|(v, _)| v),
+    );
 
     loop {
+        // Re-evaluate prompt functions before each read_line
+        if ps1_is_fn {
+            if let Some(conn) = connection.as_mut() {
+                prompt.ps1 = eval_prompt_fn(conn, "*PS1*");
+            }
+        }
+        if ps2_is_fn {
+            if let Some(conn) = connection.as_mut() {
+                prompt.ps2 = eval_prompt_fn(conn, "*PS2*");
+            }
+        }
+
         match editor.read_line(&prompt) {
             Ok(Signal::Success(line)) => {
                 let trimmed = line.trim();
@@ -316,8 +418,16 @@ fn main() {
                                     );
                                     run_init(connection.as_mut().unwrap());
                                     let symbols = fetch_symbols(connection.as_mut().unwrap());
-                                    let (new_editor, new_prompt) =
-                                        build_editor(&current_port, symbols);
+                                    let (raw_ps1, raw_ps2) =
+                                        fetch_prompt_vars(connection.as_mut().unwrap());
+                                    ps1_is_fn = raw_ps1.as_ref().map(|(_, f)| *f).unwrap_or(false);
+                                    ps2_is_fn = raw_ps2.as_ref().map(|(_, f)| *f).unwrap_or(false);
+                                    let (new_editor, new_prompt) = build_editor(
+                                        &current_port,
+                                        symbols,
+                                        raw_ps1.map(|(v, _)| v),
+                                        raw_ps2.map(|(v, _)| v),
+                                    );
                                     editor = new_editor;
                                     prompt = new_prompt;
                                 }
@@ -331,8 +441,10 @@ fn main() {
                         MetaResult::Disconnect => {
                             connection = None;
                             current_port.clear();
+                            ps1_is_fn = false;
+                            ps2_is_fn = false;
                             println!("{}", Color::Yellow.paint("Disconnected."));
-                            let (new_editor, new_prompt) = build_editor("", None);
+                            let (new_editor, new_prompt) = build_editor("", None, None, None);
                             editor = new_editor;
                             prompt = new_prompt;
                         }
@@ -366,7 +478,9 @@ fn main() {
                             eprintln!("Use /connect to reconnect.");
                             connection = None;
                             current_port.clear();
-                            let (new_editor, new_prompt) = build_editor("", None);
+                            ps1_is_fn = false;
+                            ps2_is_fn = false;
+                            let (new_editor, new_prompt) = build_editor("", None, None, None);
                             editor = new_editor;
                             prompt = new_prompt;
                             continue;

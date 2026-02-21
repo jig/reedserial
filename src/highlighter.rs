@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use nu_ansi_term::{Color, Style};
 use reedline::{Highlighter, StyledText};
 
@@ -10,11 +12,23 @@ use reedline::{Highlighter, StyledText};
 /// - Known symbols / builtins: bold white
 /// - Unbalanced parens: red underline
 /// - Comments (;...): dark gray
-pub struct LispHighlighter;
+pub struct LispHighlighter {
+    known_symbols: HashSet<String>,
+}
 
 impl LispHighlighter {
+    /// Create a highlighter with the hardcoded fallback symbol set.
+    /// Used when disconnected.
     pub fn new() -> Self {
-        Self
+        let known_symbols = FALLBACK_SYMBOLS.iter().map(|s| s.to_string()).collect();
+        Self { known_symbols }
+    }
+
+    /// Create a highlighter from a live symbol list fetched from the MCU.
+    pub fn with_symbols(symbols: Vec<String>) -> Self {
+        Self {
+            known_symbols: symbols.into_iter().collect(),
+        }
     }
 }
 
@@ -81,7 +95,7 @@ impl Highlighter for LispHighlighter {
                 ';' => {
                     // Flush any pending token first
                     if !current.is_empty() {
-                        styled.push((token_style(&current), current.clone()));
+                        styled.push((token_style(&current, &self.known_symbols), current.clone()));
                         current.clear();
                     }
                     current.push(ch);
@@ -89,7 +103,7 @@ impl Highlighter for LispHighlighter {
                 }
                 '"' => {
                     if !current.is_empty() {
-                        styled.push((token_style(&current), current.clone()));
+                        styled.push((token_style(&current, &self.known_symbols), current.clone()));
                         current.clear();
                     }
                     current.push(ch);
@@ -97,14 +111,14 @@ impl Highlighter for LispHighlighter {
                 }
                 '(' | ')' => {
                     if !current.is_empty() {
-                        styled.push((token_style(&current), current.clone()));
+                        styled.push((token_style(&current, &self.known_symbols), current.clone()));
                         current.clear();
                     }
                     styled.push((paren_style, ch.to_string()));
                 }
                 ' ' | '\t' | '\n' => {
                     if !current.is_empty() {
-                        styled.push((token_style(&current), current.clone()));
+                        styled.push((token_style(&current, &self.known_symbols), current.clone()));
                         current.clear();
                     }
                     styled.push((Style::new(), ch.to_string()));
@@ -123,7 +137,7 @@ impl Highlighter for LispHighlighter {
                 // Unclosed string
                 styled.push((Style::new().fg(Color::Green), current));
             } else {
-                styled.push((token_style(&current), current));
+                styled.push((token_style(&current, &self.known_symbols), current));
             }
         }
 
@@ -132,7 +146,7 @@ impl Highlighter for LispHighlighter {
 }
 
 /// Determine the style for a non-paren, non-string token.
-fn token_style(token: &str) -> Style {
+fn token_style(token: &str, known_symbols: &HashSet<String>) -> Style {
     // Number literal
     if token.parse::<f64>().is_ok() {
         return Style::new().fg(Color::Yellow);
@@ -142,73 +156,71 @@ fn token_style(token: &str) -> Style {
         return Style::new().fg(Color::Purple);
     }
     // Special forms / builtins
-    if is_known_symbol(token) {
+    if known_symbols.contains(token) {
         return Style::new().bold();
     }
     // Regular symbol or unknown
     Style::new().fg(Color::White)
 }
 
-fn is_known_symbol(token: &str) -> bool {
-    matches!(
-        token,
-        "def!"
-            | "let*"
-            | "fn*"
-            | "if"
-            | "do"
-            | "quote"
-            | "quasiquote"
-            | "defmacro!"
-            | "macroexpand"
-            | "try*"
-            | "catch*"
-            | "not"
-            | "and"
-            | "or"
-            | "println"
-            | "prn"
-            | "pr-str"
-            | "str"
-            | "list"
-            | "list?"
-            | "empty?"
-            | "count"
-            | "cons"
-            | "concat"
-            | "nth"
-            | "first"
-            | "rest"
-            | "map"
-            | "apply"
-            | "filter"
-            | "reduce"
-            | "vec"
-            | "vector"
-            | "hash-map"
-            | "assoc"
-            | "dissoc"
-            | "get"
-            | "contains?"
-            | "keys"
-            | "vals"
-            | "atom"
-            | "deref"
-            | "reset!"
-            | "swap!"
-            | "eval"
-            | "time/sleep-ms"
-            | "time/sleep-us"
-            | "motor/set-speed"
-            | "motor/set-pid"
-            | "motor/enable"
-            | "motor/set-direction-reversed"
-            | "motor/get-state"
-            | "motor/set-frequency"
-            | "motor/set-timeout-ms"
-            | "motor/stop-all"
-            | "motor/emergency-stop"
-            | "servo/set-angle"
-            | "system/battery-voltage"
-    )
-}
+/// Fallback symbol list used when disconnected.
+const FALLBACK_SYMBOLS: &[&str] = &[
+    "def!",
+    "let*",
+    "fn*",
+    "if",
+    "do",
+    "quote",
+    "quasiquote",
+    "defmacro!",
+    "macroexpand",
+    "try*",
+    "catch*",
+    "not",
+    "and",
+    "or",
+    "println",
+    "prn",
+    "pr-str",
+    "str",
+    "list",
+    "list?",
+    "empty?",
+    "count",
+    "cons",
+    "concat",
+    "nth",
+    "first",
+    "rest",
+    "map",
+    "apply",
+    "filter",
+    "reduce",
+    "vec",
+    "vector",
+    "hash-map",
+    "assoc",
+    "dissoc",
+    "get",
+    "contains?",
+    "keys",
+    "vals",
+    "atom",
+    "deref",
+    "reset!",
+    "swap!",
+    "eval",
+    "time/sleep-ms",
+    "time/sleep-us",
+    "motor/set-speed",
+    "motor/set-pid",
+    "motor/enable",
+    "motor/set-direction-reversed",
+    "motor/get-state",
+    "motor/set-frequency",
+    "motor/set-timeout-ms",
+    "motor/stop-all",
+    "motor/emergency-stop",
+    "servo/set-angle",
+    "system/battery-voltage",
+];
