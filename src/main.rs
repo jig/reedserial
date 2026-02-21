@@ -1,5 +1,6 @@
 mod completer;
 mod highlighter;
+mod init;
 mod meta;
 mod serial;
 mod validator;
@@ -18,6 +19,7 @@ use serde::Deserialize;
 
 use completer::LispCompleter;
 use highlighter::LispHighlighter;
+use init::load_init;
 use meta::{connection_status, handle_meta, is_meta, MetaResult};
 use serial::{auto_detect_port, SerialConnection};
 use validator::LispValidator;
@@ -174,6 +176,44 @@ fn build_editor(port_name: &str) -> (Reedline, LispPrompt) {
     (editor, prompt)
 }
 
+// ─── Init Script ──────────────────────────────────────────────────────────────
+
+/// Run ~/.config/reedserial/init.lisp against an open connection.
+///
+/// Each top-level expression is printed in dark gray, sent, and its response
+/// printed in cyan. Aborts on the first error response from the MCU.
+fn run_init(conn: &mut SerialConnection) {
+    let expressions = load_init();
+    if expressions.is_empty() {
+        return;
+    }
+
+    println!("{}", Color::DarkGray.paint("Running init.lisp..."));
+
+    for expr in &expressions {
+        println!("{}", Color::DarkGray.paint(format!("  {}", expr)));
+
+        if let Err(e) = conn.send_line(expr) {
+            eprintln!("{}", Color::Red.paint(format!("Init send error: {}", e)));
+            return;
+        }
+
+        let lines = conn.read_response();
+        for line in &lines {
+            println!("  {}", Color::Cyan.paint(line));
+            if line.starts_with("Error") || line.starts_with("ERROR") {
+                eprintln!(
+                    "{}",
+                    Color::Red.paint("Init aborted: error response from MCU.")
+                );
+                return;
+            }
+        }
+    }
+
+    println!("{}", Color::DarkGray.paint("Init done."));
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -198,6 +238,7 @@ fn main() {
                     "{}",
                     Color::Green.paint(connection_status(connection.as_ref()))
                 );
+                run_init(connection.as_mut().unwrap());
             }
             Err(e) => {
                 eprintln!("{}", Color::Yellow.paint(format!("Warning: {}", e)));
@@ -253,6 +294,7 @@ fn main() {
                                         "{}",
                                         Color::Green.paint(connection_status(connection.as_ref()))
                                     );
+                                    run_init(connection.as_mut().unwrap());
                                     let (new_editor, new_prompt) = build_editor(&current_port);
                                     editor = new_editor;
                                     prompt = new_prompt;

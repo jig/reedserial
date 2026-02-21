@@ -8,6 +8,7 @@ A [Reedline](https://github.com/nushell/reedline)-based interactive shell for se
 - **Tab completion** — Lisp symbols from the lisp-pid API and MAL builtins
 - **Syntax highlighting** — parentheses, strings, numbers, known symbols, unbalanced parens
 - **Multiline input** — automatically enters multiline mode when parentheses are unbalanced
+- **Init script** — run Lisp expressions on every connection via `~/.config/reedserial/init.lisp`
 - **Meta-commands** — `/`-prefixed commands for port management without leaving the shell
 - **Auto-detection** — finds the most likely USB-serial port on startup
 - **Config file** — persistent port and baud rate via `~/.config/reedserial/config.toml`
@@ -55,6 +56,37 @@ baud = 115200
 ```
 
 Priority: CLI args → config file → auto-detect.
+
+## Init script
+
+`~/.config/reedserial/init.lisp` is executed automatically on every connection (startup and `/connect`).
+
+Each top-level expression is sent sequentially; reedserial waits for the MCU's response before sending the next one. Execution stops on the first error response.
+
+```lisp
+; Safety: stop all motors before doing anything else
+(motor/emergency-stop)
+
+; Enable motors
+(motor/enable 0 true)
+(motor/enable 1 true)
+
+; Set PID parameters
+(motor/set-pid 0 1.2 0.1 0.05)
+(motor/set-pid 1 1.2 0.1 0.05)
+```
+
+Multi-line expressions are supported — they are collapsed to a single line before being sent, since lisp-pid processes one line at a time:
+
+```lisp
+(let* [kp 1.2
+       ki 0.1]
+  (motor/set-pid 0 kp ki 0.0))
+```
+
+Lines starting with `;` and inline comments after `;` are ignored.
+
+The file is optional — if it does not exist, startup proceeds silently.
 
 ## Dependencies
 
