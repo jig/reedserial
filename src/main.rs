@@ -295,7 +295,9 @@ fn main() {
                         );
                     }
                     Some(conn) => {
-                        if let Err(e) = conn.send_line(trimmed) {
+                        // Collapse multiline input to a single line before sending
+                        let single_line = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
+                        if let Err(e) = conn.send_line(&single_line) {
                             eprintln!("{}", Color::Red.paint(format!("Send error: {}", e)));
                             eprintln!("Use /connect to reconnect.");
                             connection = None;

@@ -197,7 +197,6 @@ fn is_known_symbol(token: &str) -> bool {
             | "reset!"
             | "swap!"
             | "eval"
-            | "time-ms"
             | "time/sleep-ms"
             | "time/sleep-us"
             | "motor/set-speed"
