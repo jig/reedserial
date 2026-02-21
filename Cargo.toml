@@ -1,0 +1,18 @@
+[package]
+name = "reedserial"
+version = "0.1.0"
+edition = "2021"
+description = "Reedline-based serial port shell for Lisp microcontroller REPL"
+
+[[bin]]
+name = "reedserial"
+path = "src/main.rs"
+
+[dependencies]
+reedline = "0.37"
+nu-ansi-term = "0.50"
+serialport = "4.6"
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+directories = "5.0"
