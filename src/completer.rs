@@ -126,9 +126,20 @@ pub struct LispCompleter {
 }
 
 impl LispCompleter {
+    /// Create a completer pre-populated with the hardcoded fallback symbol list.
+    /// Used when disconnected.
     pub fn new() -> Self {
         let mut symbols: Vec<String> = LISP_SYMBOLS.iter().map(|s| s.to_string()).collect();
         symbols.sort();
+        Self { symbols }
+    }
+
+    /// Create a completer from a live symbol list fetched from the MCU.
+    /// Used after a successful connection.
+    pub fn with_symbols(symbols: Vec<String>) -> Self {
+        let mut symbols = symbols;
+        symbols.sort();
+        symbols.dedup();
         Self { symbols }
     }
 

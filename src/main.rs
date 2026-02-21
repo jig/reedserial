@@ -132,12 +132,31 @@ fn history_path() -> PathBuf {
 
 // ─── Build Reedline Editor ───────────────────────────────────────────────────
 
-fn build_editor(port_name: &str) -> (Reedline, LispPrompt) {
+/// Fetch the live symbol list from the MCU by calling `(env/keys)`.
+/// Returns None if not connected or if the response cannot be parsed.
+fn fetch_symbols(conn: &mut SerialConnection) -> Option<Vec<String>> {
+    conn.send_line("(env/keys)").ok()?;
+    let lines = conn.read_response();
+    let line = lines.first()?;
+    // Response is a MAL list: (sym1 sym2 sym3 ...)
+    let trimmed = line.trim().trim_start_matches('(').trim_end_matches(')');
+    let symbols: Vec<String> = trimmed.split_whitespace().map(|s| s.to_string()).collect();
+    if symbols.is_empty() {
+        None
+    } else {
+        Some(symbols)
+    }
+}
+
+fn build_editor(port_name: &str, symbols: Option<Vec<String>>) -> (Reedline, LispPrompt) {
     let history = Box::new(
         FileBackedHistory::with_file(1000, history_path()).expect("Failed to open history file"),
     );
 
-    let completer = Box::new(LispCompleter::new());
+    let completer = Box::new(match symbols {
+        Some(syms) => LispCompleter::with_symbols(syms),
+        None => LispCompleter::new(),
+    });
     let highlighter = Box::new(LispHighlighter::new());
     let validator = Box::new(LispValidator::new());
 
@@ -254,7 +273,8 @@ fn main() {
 
     println!("Type /help for available commands. Ctrl+D or /quit to exit.\n");
 
-    let (mut editor, mut prompt) = build_editor(&current_port);
+    let initial_symbols = connection.as_mut().and_then(fetch_symbols);
+    let (mut editor, mut prompt) = build_editor(&current_port, initial_symbols);
 
     loop {
         match editor.read_line(&prompt) {
@@ -295,7 +315,9 @@ fn main() {
                                         Color::Green.paint(connection_status(connection.as_ref()))
                                     );
                                     run_init(connection.as_mut().unwrap());
-                                    let (new_editor, new_prompt) = build_editor(&current_port);
+                                    let symbols = fetch_symbols(connection.as_mut().unwrap());
+                                    let (new_editor, new_prompt) =
+                                        build_editor(&current_port, symbols);
                                     editor = new_editor;
                                     prompt = new_prompt;
                                 }
@@ -310,7 +332,7 @@ fn main() {
                             connection = None;
                             current_port.clear();
                             println!("{}", Color::Yellow.paint("Disconnected."));
-                            let (new_editor, new_prompt) = build_editor("");
+                            let (new_editor, new_prompt) = build_editor("", None);
                             editor = new_editor;
                             prompt = new_prompt;
                         }
@@ -344,7 +366,7 @@ fn main() {
                             eprintln!("Use /connect to reconnect.");
                             connection = None;
                             current_port.clear();
-                            let (new_editor, new_prompt) = build_editor("");
+                            let (new_editor, new_prompt) = build_editor("", None);
                             editor = new_editor;
                             prompt = new_prompt;
                             continue;
