@@ -17,6 +17,10 @@ const LISP_SYMBOLS: &[&str] = &[
     "servo/set-angle",
     // lisp-pid system API
     "system/battery-voltage",
+    // lisp-pid memory API
+    "mem/free",
+    "mem/total",
+    "mem/used",
     // lisp-pid time API (sleep)
     "time/sleep-ns",
     "time/sleep-us",
